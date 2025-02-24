@@ -3,11 +3,39 @@ import aiohttp
 import asyncio
 import json
 import sys
+import re
+import uuid
 from pathlib import Path
+from datetime import datetime
+from typing import Tuple, Optional
 
-# Load dataset from JSONL file
+class BenchmarkLogger:
+    def __init__(self, output_file=None):
+        if output_file is None:
+            unique_id = uuid.uuid4().hex[:8]
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_file = f"output_{timestamp}_{unique_id}.jsonl"
+        
+        self.output_file = output_file
+        self.file = open(output_file, 'w', encoding='utf-8')
+        print(f"Logging results to: {self.output_file}")
+
+    def log_result(self, result_dict: dict):
+        json_line = json.dumps(result_dict, ensure_ascii=False)
+        self.file.write(json_line + '\n')
+        self.file.flush()
+        
+        print(f"\nResult saved:")
+        print(f"Question ID: {result_dict.get('question_id')}")
+        print(f"Extracted Answer: {result_dict.get('extracted_answer')}")
+        print(f"Ground Truth: {result_dict.get('ground_truth')}")
+        print(f"Correct: {result_dict.get('is_correct')}")
+        print("-" * 50)
+
+    def close(self):
+        self.file.close()
+
 async def load_dataset(filename: str) -> list:
-    """Load dataset from a JSONL file."""
     try:
         with open(filename, 'r') as file:
             data = [json.loads(line) for line in file]
@@ -19,85 +47,199 @@ async def load_dataset(filename: str) -> list:
         print(f"Error reading dataset: {e}", file=sys.stderr)
         sys.exit(1)
 
-# Send request and stream response
-async def send_request(session: aiohttp.ClientSession, messages: list) -> str:
-    """Send request and stream response."""
-    response_content = ""
-    async with session.post(
-        "http://localhost:8000/v1/chat/completions",
-        json={
-            "model": "hello",
-            "messages": messages,
-            "stream": True,
-            "temperature": 0.1,
-            "max_tokens": 1000  
-        }
-    ) as response:
-        async for line in response.content:
-            try:
-                line = line.decode()
-                if line.startswith("data: "):
-                    data = line.removeprefix("data: ")
-                    if data.strip() == "[DONE]":
-                        break
-                    response = json.loads(data)
-                    if content := response.get("choices", [{}])[0].get("delta", {}).get("content"):
-                        sys.stdout.write(content)
-                        sys.stdout.flush()
-                        response_content += content
-            except json.JSONDecodeError:
-                continue
-        print()  # Final newline
-    return response_content
+async def extract_json_from_text(text: str) -> str:
+    """Extract JSON response using regex."""
+    try:
+        # Look for JSON between triple backticks
+        json_match = re.search(r'```json\s*(.*?)\s*```', text, re.DOTALL)
+        if json_match:
+            return json_match.group(1)
+        
+        # If no triple backticks, look for any JSON object
+        json_match = re.search(r'({[^{]*})', text, re.DOTALL)
+        if json_match:
+            return json_match.group(1)
+            
+        return None
+    except Exception:
+        return None
 
-# Calculate score (e.g., accuracy or F1)
-def calculate_score(predictions: list, ground_truths: list) -> float:
-    """Calculate accuracy score."""
-    correct = sum(1 for pred, truth in zip(predictions, ground_truths) if pred.strip().lower() == truth.strip().lower())
-    return correct / len(ground_truths)
+async def send_streaming_request(session: aiohttp.ClientSession, messages: list, max_retries: int = 3) -> str:
+    """Send streaming request and return the complete response content."""
+    
+    # messages.append({
+    #     "role": "system",
+    #     "content": "Return your final answer as a JSON object with 'answer' field containing just the letter A, B, C, or D, wrapped in triple backticks. Example: ```json{\"answer\": \"A\"}```"
+    # })
+    
+    for attempt in range(max_retries):
+        try:
+            response_content = ""
+            
+            async with session.post(
+                "http://localhost:8000/v1/chat/completions",
+                json={
+                    "model": "hello",
+                    "messages": messages,
+                    "stream": True,
+                    "temperature": 0.7,
+                    "max_tokens": 1000
+                }
+            ) as response:
+                async for line in response.content:
+                    try:
+                        line = line.decode()
+                        if line.startswith("data: "):
+                            data = line.removeprefix("data: ")
+                            if data.strip() == "[DONE]":
+                                break
+                            
+                            chunk_data = json.loads(data)
+                            if content := chunk_data.get("choices", [{}])[0].get("delta", {}).get("content"):
+                                sys.stdout.write(content)
+                                sys.stdout.flush()
+                                response_content += content
+                                            
+                    except json.JSONDecodeError:
+                        continue
+                
+                print()  # Final newline
+                return response_content
+                
+        except Exception as e:
+            if attempt == max_retries - 1:
+                print(f"Error after {max_retries} attempts: {e}", file=sys.stderr)
+                return ""
+            print(f"Attempt {attempt + 1} failed, retrying...", file=sys.stderr)
+            await asyncio.sleep(1)  # Wait before retry
+    
+    return ""
 
+async def extract_answer(response_content: str) -> str:
+    """Extract answer from response content and validate it."""
+    if not response_content:
+        return "UNCLEAR"
+        
+    # Try to extract JSON from response
+    json_str = await extract_json_from_text(response_content)
+    if not json_str:
+        return "UNCLEAR"
+        
+    try:
+        answer_data = json.loads(json_str)
+        if "answer" in answer_data:
+            answer = answer_data["answer"].strip().upper()
+            if re.match(r'^[A-D]$', answer):
+                return answer
+    except json.JSONDecodeError:
+        pass
+        
+    return "UNCLEAR"
 
+def calculate_score(predictions: list, ground_truths: list) -> Tuple[float, dict]:
+    if not predictions or not ground_truths:
+        return 0.0, {}
+    
+    total = len(ground_truths)
+    correct = 0
+    unclear = 0
+    incorrect = 0
+    confusion_matrix = {'A': {'A': 0, 'B': 0, 'C': 0, 'D': 0, 'UNCLEAR': 0},
+                       'B': {'A': 0, 'B': 0, 'C': 0, 'D': 0, 'UNCLEAR': 0},
+                       'C': {'A': 0, 'B': 0, 'C': 0, 'D': 0, 'UNCLEAR': 0},
+                       'D': {'A': 0, 'B': 0, 'C': 0, 'D': 0, 'UNCLEAR': 0}}
+    
+    for pred, truth in zip(predictions, ground_truths):
+        pred = pred.strip().upper()
+        truth = truth.strip().upper()
+        
+        if pred == "UNCLEAR":
+            unclear += 1
+        elif pred == truth:
+            correct += 1
+        else:
+            incorrect += 1
+            
+        if truth in confusion_matrix and pred in confusion_matrix[truth]:
+            confusion_matrix[truth][pred] += 1
 
-# {
-#     "_id": "Unique identifier for each piece of data",
-#     "domain": "The primary domain category of the data",
-#     "sub_domain": "The specific sub-domain category within the domain",
-#     "difficulty": "The difficulty level of the task, either 'easy' or 'hard'",
-#     "length": "The length category of the task, which can be 'short', 'medium', or 'long'",
-#     "question": "The input/command for the task, usually short, such as questions in QA, queries in many-shot learning, etc",
-#     "choice_A": "Option A", "choice_B": "Option B", "choice_C": "Option C", "choice_D": "Option D",
-#     "answer": "The groundtruth answer, denoted as A, B, C, or D",
-#     "context": "The long context required for the task, such as documents, books, code repositories, etc."
-# }
+    metrics = {
+        'accuracy': correct / total,
+        'unclear_rate': unclear / total,
+        'incorrect_rate': incorrect / total,
+        'confusion_matrix': confusion_matrix,
+        'total_questions': total,
+        'correct_answers': correct,
+        'unclear_answers': unclear,
+        'incorrect_answers': incorrect
+    }
+    
+    return metrics['accuracy'], metrics
 
-
-# Benchmark function
-async def benchmark(session: aiohttp.ClientSession, dataset: list):
-    """Run benchmark on the dataset."""
+async def benchmark(session: aiohttp.ClientSession, dataset: list, logger: BenchmarkLogger):
     predictions = []
     ground_truths = []
 
     for idx, entry in enumerate(dataset):
         try:
-            print(f"\nQuestion {idx + 1}/{len(dataset)}:")
+            print(f"\nProcessing Question {idx + 1}/{len(dataset)}:")
             print(f"Question: {entry['question']}")
-            print(f"Ground Truth: {entry['answer']}")
-
-            # Prepare messages
-            messages = [
-                {"role": "system", "content": f"You are a helpful assistant. Use the following context to answer questions.\n\nContext:\n{entry['context']}\n\nEnd of Context."},
-                {"role": "user", "content": f"Given the question {entry['question']}\n\n Answer the multiple choice question by giving letter, here are the options A {entry['choice_A']}, B {entry['choice_B']}, C {entry['choice_C']}, or D {entry['choice_D']}. But first, discuss each choice and think step by step. Use citations from the context to support your answer. Then return a final answer."}
+            print(f"Options:")
+            print(f"A: {entry['choice_A']}")
+            print(f"B: {entry['choice_B']}")
+            print(f"C: {entry['choice_C']}")
+            print(f"D: {entry['choice_D']}")
+            
+            # First stage: Reasoning and analysis prompt
+            analysis_messages = [
+                {"role": "system", "content": f"You are a helpful assistant. Your task is to analyze multiple choice questions based on context.\n\nContext:\n{entry['context']}\n\nEnd of Context."},
+                {"role": "user", "content": f"Question: {entry['question']}\n\nOptions:\nA: {entry['choice_A']}\nB: {entry['choice_B']}\nC: {entry['choice_C']}\nD: {entry['choice_D']}\n\nPlease analyze each option step by step, using evidence from the context to support your reasoning. Then return you Final Answer."}
             ]
 
-            # display the options
+            print("\nAnalysis Stage:")
+            analysis_response = await send_streaming_request(session, analysis_messages)
+            
+            # Second stage: Final answer selection prompt
+            answer_format = '```json{"answer": "X"}```'
+            answer_messages = [
+                {"role": "system", "content": "Based on the previous analysis, provide your final answer as a single letter choice."},
+                {"role": "user", "content": f"Previous analysis:\n{analysis_response}\n\nBased on this analysis, which option (A, B, C, or D) is correct? Respond with ONLY a JSON object containing your answer letter, using this format: {answer_format} where X is your chosen letter."}
+            ]
 
-
-            # Get model response
-            print("Model Response:")
-
-            response = await send_request(session, messages)
+            print("\nModel Response:")
+            # Get the final answer from the second stage
+            final_response = await send_streaming_request(session, answer_messages)
+            extracted_answer = await extract_answer(final_response)
+            
+            # Combine both responses for logging
+            detailed_response = f"ANALYSIS STAGE:\n{analysis_response}\n\nANSWER STAGE:\n{final_response}"
+            
+            print(f"\nExtracted Answer: {extracted_answer}")
             print(f"Ground Truth: {entry['answer']}")
-            predictions.append(response)
+            
+            result = {
+                'question_id': idx + 1,
+                'is_correct': extracted_answer == entry['answer'],
+                'timestamp': datetime.now().isoformat(),
+                'question': entry['question'],
+                # 'context': entry['context'],
+                'choices': {
+                    'A': entry['choice_A'],
+                    'B': entry['choice_B'],
+                    'C': entry['choice_C'],
+                    'D': entry['choice_D']
+                },
+                'detailed_response': detailed_response,
+                'extracted_answer': extracted_answer,
+                'ground_truth': entry['answer'],
+                'domain': entry.get('domain'),
+                'sub_domain': entry.get('sub_domain'),
+                'difficulty': entry.get('difficulty'),
+                'length': entry.get('length')
+            }
+            
+            logger.log_result(result)
+            predictions.append(extracted_answer)
             ground_truths.append(entry['answer'])
 
         except KeyboardInterrupt:
@@ -105,39 +247,48 @@ async def benchmark(session: aiohttp.ClientSession, dataset: list):
             break
         except Exception as e:
             print(f"Error processing question {idx + 1}: {e}", file=sys.stderr)
+            error_result = {
+                'question_id': idx + 1,
+                'timestamp': datetime.now().isoformat(),
+                'error': str(e),
+                'question': entry['question'],
+                'ground_truth': entry['answer']
+            }
+            logger.log_result(error_result)
             continue
 
-    # Calculate and display score
     if predictions and ground_truths:
-        score = calculate_score(predictions, ground_truths)
-        print(f"\nBenchmark completed. Score: {score * 100:.2f}%")
+        accuracy, metrics = calculate_score(predictions, ground_truths)
+        final_metrics = {
+            'timestamp': datetime.now().isoformat(),
+            'type': 'final_metrics',
+            'accuracy': accuracy,
+            'total_questions': metrics['total_questions'],
+            'correct_answers': metrics['correct_answers'],
+            'unclear_answers': metrics['unclear_answers'],
+            'incorrect_answers': metrics['incorrect_answers'],
+            'confusion_matrix': metrics['confusion_matrix']
+        }
+        logger.log_result(final_metrics)
+        
+        print("\nFinal Benchmark Results:")
+        print(f"Overall Accuracy: {accuracy * 100:.2f}%")
+        print(f"Total Questions: {metrics['total_questions']}")
+        print(f"Correct Answers: {metrics['correct_answers']}")
+        print(f"Unclear Answers: {metrics['unclear_answers']}")
+        print(f"Incorrect Answers: {metrics['incorrect_answers']}")
     else:
         print("\nNo predictions were made.")
 
-# Main function
 async def main():
-    # Load context from llm.txt
-    # context = await read_file("llm.txt")
-
-    # Load dataset from JSONL file
-    dataset = await load_dataset("longbench/data.jsonl")
-
-    # Run benchmark
-    async with aiohttp.ClientSession() as session:
-        await benchmark(session, dataset)
-
-# Helper function to read file
-async def read_file(filename: str) -> str:
-    """Read content from the specified file."""
+    logger = BenchmarkLogger()
+    
     try:
-        content = Path(filename).read_text(encoding='utf-8')
-        return content
-    except FileNotFoundError:
-        print(f"Error: File '{filename}' not found.", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"Error reading file: {e}", file=sys.stderr)
-        sys.exit(1)
+        dataset = await load_dataset("longbench/data.jsonl")
+        async with aiohttp.ClientSession() as session:
+            await benchmark(session, dataset, logger)
+    finally:
+        logger.close()
 
 if __name__ == "__main__":
     asyncio.run(main())

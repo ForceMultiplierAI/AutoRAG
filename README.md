@@ -11,6 +11,37 @@ AutoRAG is a high-performance streaming proxy for OpenAI-compatible APIs that pr
 - **Thinking and Reasoning Tag Injection**: Adds `<thinking>` tags to provide insight into model processing
 - **System Tag Information**: Adds `<system>` tag to show progress and stats on compression, etc.
 
+## LongBench V2
+Here's the data converted to markdown tables:
+
+| Category | Score | Count |
+|----------|-------|-------|
+| Overall | 34.9% | 63 |
+
+**By Difficulty:**
+| Category | Score | Count |
+|----------|-------|-------|
+| Easy | 39.1% | 23 |
+| Hard | 32.5% | 40 |
+
+**By Length:**
+| Category | Score | Count |
+|----------|-------|-------|
+| Short | 41.4% | 29 |
+| Medium | 33.3% | 21 |
+| Long | 23.1% | 13 |
+
+**By Domain:**
+| Category | Score | Count |
+|----------|-------|-------|
+| Code Repository Understanding | 37.5% | 8 |
+| Long In-context Learning | 44.4% | 9 |
+| Long Structured Data | 0.0% | 5 |
+| Long-dialogue History | 33.3% | 6 |
+| Multi-Document QA | 41.2% | 17 |
+| Single-Document QA | 33.3% | 18 |
+
+
 ## 🛠 How It Works
 
 ### Prompt Compression
