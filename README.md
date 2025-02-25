@@ -24,7 +24,6 @@ AutoRAG is a high-performance streaming proxy for OpenAI-compatible APIs that pr
 - **System Tag Information**: Adds `<system>` tag to show progress and stats on compression, etc.
 
 ## LongBench V2
-Here's the data converted to markdown tables:
 
 | Category | Score | Count |
 |----------|-------|-------|
@@ -107,15 +106,19 @@ import aiohttp
 import asyncio
 
 async def chat_with_proxy():
+    # Load the long text file
+    with open("llm.txt", "r") as file: # input large document here!
+        document_text = file.read()
+    
     async with aiohttp.ClientSession() as session:
         messages = [
             {
                 "role": "system", 
-                "content": "Long system context that might exceed token limits..."
+                "content": f"You are an assistant. Here's context: {document_text}" # Set it here, and it will cache!
             },
             {
                 "role": "user", 
-                "content": "Your question here"
+                "content": "Your long RAG question here"
             }
         ]
         
@@ -128,6 +131,7 @@ async def chat_with_proxy():
             }
         ) as response:
             # Handle streaming response
+            # Rest of your code here...
 ```
 
 ## 🔍 Use Cases
