@@ -1,0 +1,5 @@
+aiohttp>=3.8.0
+llmlingua>=0.3.0
+transformers>=4.33.0
+torch>=2.0.0
+typing-extensions>=4.0.0
