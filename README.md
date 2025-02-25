@@ -1,3 +1,15 @@
+# 🚀 This is Demo Software
+
+**Experience the full power of AutoRAG in our production-ready enterprise solution!** This repository provides a glimpse of our innovative technology, but our commercial version offers enhanced features, dedicated support, and seamless integration with your existing infrastructure.
+
+**Ready to transform your AI capabilities?**
+- Contact: contact@forcemultiplier.ai
+- Subject: AutoRAG Commercial Access
+
+Join leading organizations that have already unlocked the full potential of their large language models with our enterprise solution.
+
+---
+
 # AutoRAG 🚀: Intelligent Prompt Compression Proxy
 
 AutoRAG is a high-performance streaming proxy for OpenAI-compatible APIs that provides intelligent system message compression and enhanced token management.
@@ -88,8 +100,6 @@ python autorag.py \
 python rag_client.py 
 ```
 
-# 
-
 ## 📝 Example Usage
 
 ```python
@@ -125,6 +135,17 @@ async def chat_with_proxy():
 - Multi-document reasoning
 - Enterprise documentation processing
 - Research paper analysis
+- **Code Repository Navigation**: Seamlessly explore and query your entire codebase
+  
+## 💻 Talk to Your Code
+AutoRAG's powerful code navigation feature allows you to have natural conversations with your entire codebase. Simply point to your repository and ask questions in plain language:
+
+- "How does the authentication system work?"
+- "What are the main dependencies of this project?"
+- "Explain the data flow in the user registration process."
+- "Where are API endpoints defined?"
+
+Our intelligent token management ensures even large repositories fit within context windows, preserving critical code structure while maximizing information density.
 
 
 ## 📦 Installation

@@ -19,11 +19,15 @@ class Config:
 
 config = Config()
 
+# Initialize global compressor and queue
+compressor = None
+compression_queue = None
+
 def get_target_token_limit() -> int:
     """Calculate target token limit based on context limit."""
     max_tokens = config.context_limit * 1024  # Convert k to actual tokens
     target_tokens = max_tokens - config.compression_buffer
-    return int(target_tokens * 0.90)  # 90% of available space to be safe
+    return int(target_tokens * 0.80)  # 90% of available space to be safe
 
 def format_sse_event(content: str) -> bytes:
     """Format content as an SSE event with the expected JSON structure."""
@@ -36,10 +40,6 @@ def format_sse_event(content: str) -> bytes:
         ]
     }
     return f"data: {json.dumps(event_data)}\n\n".encode()
-
-# Initialize global compressor and queue
-compressor = None
-compression_queue = None
 
 async def stream_compression_progress(session: aiohttp.ClientSession, prompt: str, target_tokens: int = None) -> AsyncGenerator[Tuple[bytes, Dict[str, Any]], None]:
     """Stream compression progress and return final result."""
@@ -68,7 +68,7 @@ async def stream_compression_progress(session: aiohttp.ClientSession, prompt: st
                 
                 # Only use cache if it's under the token limit
                 if cached_tokens <= token_limit:
-                    yield format_sse_event(f"Using cached version (hash: {prompt_hash})\n"), cached_result
+                    yield format_sse_event(f"Using cached version (hash: {prompt_hash[:8]})\n"), cached_result
                     result = cached_result
                 else:
                     yield format_sse_event(f"Cached version exceeds token limit, recompressing...\n"), None
